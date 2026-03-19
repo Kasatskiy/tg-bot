@@ -41,33 +41,7 @@ WEEKDAYS = {
 COUNTRY_TIMEZONES = {
     "чехия": "Europe/Prague",
     "украина": "Europe/Kyiv",
-    "польша": "Europe/Warsaw",
-    "германия": "Europe/Berlin",
-    "литва": "Europe/Vilnius",
-    "латвия": "Europe/Riga",
-    "эстония": "Europe/Tallinn",
-    "молдова": "Europe/Chisinau",
-    "румыния": "Europe/Bucharest",
-    "болгария": "Europe/Sofia",
-    "венгрия": "Europe/Budapest",
-    "австрия": "Europe/Vienna",
-    "швейцария": "Europe/Zurich",
-    "италия": "Europe/Rome",
-    "испания": "Europe/Madrid",
-    "франция": "Europe/Paris",
-    "нидерланды": "Europe/Amsterdam",
-    "бельгия": "Europe/Brussels",
-    "норвегия": "Europe/Oslo",
-    "швеция": "Europe/Stockholm",
-    "финляндия": "Europe/Helsinki",
-    "дания": "Europe/Copenhagen",
-    "португалия": "Europe/Lisbon",
-    "ирландия": "Europe/Dublin",
-    "великобритания": "Europe/London",
-    "англия": "Europe/London",
     "россия": "Europe/Moscow",
-    "сша": "America/New_York",
-    "америка": "America/New_York",
 }
 
 
@@ -389,7 +363,6 @@ def parse_times_space(text: str):
 
     result = []
     seen = set()
-
     for part in parts:
         t = parse_hhmm(part)
         if not t or t == "24:00":
@@ -423,7 +396,6 @@ def parse_range(text: str):
 
     start_minutes = parse_minutes_hhmm(start)
     end_minutes = parse_minutes_hhmm(end)
-
     if end_minutes <= start_minutes:
         return None
 
@@ -753,9 +725,8 @@ def periodic_interval_kb():
 def country_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Чехия"), KeyboardButton(text="Украина")],
-            [KeyboardButton(text="Польша"), KeyboardButton(text="Германия")],
-            [KeyboardButton(text="Россия"), KeyboardButton(text="США")],
+            [KeyboardButton(text="Чехия")],
+            [KeyboardButton(text="Украина")],
             [KeyboardButton(text="Другая")],
         ],
         resize_keyboard=True,
@@ -839,9 +810,9 @@ async def clear_weekdays_picker(state: FSMContext, chat_id: int):
         await state.update_data(_weekdays_msg_id=None)
 
 
-async def open_main_menu_message(message: Message, text: str = "Привет.\nЯ буду заебывать тебя до нужной даты.\n\nВыбирай:"):
-    await message.answer(" ", reply_markup=ReplyKeyboardRemove())
-    await message.answer(text, reply_markup=main_menu())
+async def open_main_menu_message(message: Message, text: str = "Привет.\nЯ буду заебывать тебя до нужной даты."):
+    await message.answer(text, reply_markup=ReplyKeyboardRemove())
+    await message.answer("Выбирай:", reply_markup=main_menu())
 
 
 async def render_country_step(message: Message):
@@ -1070,7 +1041,9 @@ dp = Dispatcher(storage=MemoryStorage())
 # =========================
 async def start_create_common(message: Message, state: FSMContext, one_time: bool = False):
     user = get_user(message.from_user.id)
+
     if not user or not user.get("timezone"):
+        await state.clear()
         await state.set_state(CountrySetup.choose)
         await render_country_step(message)
         return
@@ -1111,7 +1084,8 @@ async def show_reminders_common(message: Message, state: FSMContext):
         await open_main_menu_message(message, "Пока заебывать нечем.")
         return
 
-    await message.answer(list_numbered_reminders(reminders, user["timezone"]), reply_markup=show_list_kb())
+    await message.answer(list_numbered_reminders(reminders, user["timezone"]), reply_markup=ReplyKeyboardRemove())
+    await message.answer("Что дальше?", reply_markup=show_list_kb())
 
 
 async def edit_start_common(message: Message, state: FSMContext):
@@ -1201,8 +1175,6 @@ async def start_cmd(message: Message, state: FSMContext):
     ensure_user(message.from_user.id)
     user = get_user(message.from_user.id)
 
-    await message.answer("Made by Denis Kasatskyi")
-
     if not user or not user.get("timezone"):
         await state.set_state(CountrySetup.choose)
         await render_country_step(message)
@@ -1211,27 +1183,18 @@ async def start_cmd(message: Message, state: FSMContext):
     await open_main_menu_message(message)
 
 
-@dp.message(F.text == "Изменить страну")
-async def change_country(message: Message, state: FSMContext):
+@dp.message(CountrySetup.choose, F.text == "Чехия")
+async def country_czech(message: Message, state: FSMContext):
+    set_user_country_timezone(message.from_user.id, "Чехия", "Europe/Prague")
     await state.clear()
-    await reset_misclick(state)
-    await state.set_state(CountrySetup.choose)
-    await render_country_step(message)
+    await open_main_menu_message(message, "Красава. Страну сохранил.")
 
 
-@dp.message(CountrySetup.choose, F.text.in_(["Чехия", "Украина", "Польша", "Германия", "Россия", "США"]))
-async def country_fast_select(message: Message, state: FSMContext):
-    mapping = {
-        "Чехия": "Europe/Prague",
-        "Украина": "Europe/Kyiv",
-        "Польша": "Europe/Warsaw",
-        "Германия": "Europe/Berlin",
-        "Россия": "Europe/Moscow",
-        "США": "America/New_York",
-    }
-    set_user_country_timezone(message.from_user.id, message.text, mapping[message.text])
+@dp.message(CountrySetup.choose, F.text == "Украина")
+async def country_ukraine(message: Message, state: FSMContext):
+    set_user_country_timezone(message.from_user.id, "Украина", "Europe/Kyiv")
     await state.clear()
-    await open_main_menu_message(message, "Красава. Теперь выбирай, что делать.")
+    await open_main_menu_message(message, "Красава. Страну сохранил.")
 
 
 @dp.message(CountrySetup.choose, F.text == "Другая")
@@ -1240,25 +1203,25 @@ async def country_other(message: Message, state: FSMContext):
     await push_history(state, CountrySetup.choose.state)
     await state.set_state(CountrySetup.manual)
     await message.answer(
-        "Напиши свою страну.\n\nЭто нужно, чтобы я правильно считал время.",
+        "Напиши страну.\n\nСейчас тут работает только Россия.",
         reply_markup=back_kb(),
     )
 
 
 @dp.message(CountrySetup.manual)
 async def country_manual(message: Message, state: FSMContext):
-    country_raw = (message.text or "").strip()
-    tz = get_timezone_by_country(country_raw)
-    if not tz:
+    country_raw = normalize_country(message.text or "")
+
+    if country_raw != "россия":
         await message.answer(
             "Разработчик плохо учил географию и не знает о существовании такой страны.",
             reply_markup=back_kb(),
         )
         return
 
-    set_user_country_timezone(message.from_user.id, country_raw.strip().title(), tz)
+    set_user_country_timezone(message.from_user.id, "Россия", "Europe/Moscow")
     await state.clear()
-    await open_main_menu_message(message, "Красава. Теперь выбирай, что делать.")
+    await open_main_menu_message(message, "Красава. Страну сохранил.")
 
 
 # =========================
@@ -1350,16 +1313,6 @@ async def back_handler(message: Message, state: FSMContext):
 # =========================
 # СОЗДАНИЕ
 # =========================
-@dp.message(F.text == "Сделать новый заеб")
-async def create_start(message: Message, state: FSMContext):
-    await start_create_common(message, state, one_time=False)
-
-
-@dp.message(F.text == "Одноразовый заеб")
-async def create_once_start(message: Message, state: FSMContext):
-    await start_create_common(message, state, one_time=True)
-
-
 @dp.message(CreateReminder.title)
 async def create_title(message: Message, state: FSMContext):
     title = (message.text or "").strip()
@@ -1767,7 +1720,6 @@ async def create_edit_time(message: Message, state: FSMContext):
 # ПОКАЗАТЬ
 # =========================
 @dp.message(F.text == "Мои заебы")
-@dp.message(F.text == "Показать заебы")
 async def show_reminders(message: Message, state: FSMContext):
     await show_reminders_common(message, state)
 
@@ -1775,11 +1727,6 @@ async def show_reminders(message: Message, state: FSMContext):
 # =========================
 # РЕДАКТИРОВАНИЕ
 # =========================
-@dp.message(F.text == "Изменить заеб")
-async def edit_start(message: Message, state: FSMContext):
-    await edit_start_common(message, state)
-
-
 @dp.message(EditReminder.pick)
 async def edit_pick(message: Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -2147,11 +2094,6 @@ async def edit_change_again(message: Message, state: FSMContext):
 # =========================
 # УДАЛЕНИЕ
 # =========================
-@dp.message(F.text == "Заебал")
-async def delete_start(message: Message, state: FSMContext):
-    await delete_start_common(message, state)
-
-
 @dp.message(DeleteReminder.pick)
 async def delete_pick(message: Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -2196,15 +2138,8 @@ async def delete_yes(message: Message, state: FSMContext):
 
 
 # =========================
-# ПРОЧЕЕ
+# КНОПОЧНЫЕ СОСТОЯНИЯ
 # =========================
-@dp.message(F.text == "Меню")
-async def menu_text(message: Message, state: FSMContext):
-    await state.clear()
-    await clear_weekdays_picker(state, message.chat.id)
-    await open_main_menu_message(message, "Главное меню.")
-
-
 @dp.message(CreateReminder.ask_exact_end)
 @dp.message(CreateReminder.frequency)
 @dp.message(CreateReminder.mode)
@@ -2225,6 +2160,17 @@ async def buttons_only_states(message: Message, state: FSMContext):
 
 @dp.message()
 async def fallback(message: Message, state: FSMContext):
+    current = await state.get_state()
+    if current:
+        await message.answer("Чел, используй кнопки пожалуйста.")
+        return
+
+    user = get_user(message.from_user.id)
+    if not user or not user.get("timezone"):
+        await state.set_state(CountrySetup.choose)
+        await render_country_step(message)
+        return
+
     await open_main_menu_message(message, "Главное меню.")
 
 
@@ -2327,8 +2273,8 @@ async def reminder_loop():
 # ЗАПУСК
 # =========================
 async def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN не найден в переменных окружения")
+    if not BOT_TOKEN or BOT_TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
+        raise ValueError("Вставь BOT_TOKEN в код")
 
     init_db()
     asyncio.create_task(reminder_loop())
