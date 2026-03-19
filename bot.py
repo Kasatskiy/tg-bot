@@ -20,7 +20,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "8710757819:AAFMS9lwTNRYUCHMACicCdhQlpPDDEpevQ"
+BOT_TOKEN = "8710757819:AAFra83pBHkxPT9m6BYJRY9kEh8Akry39gI"
 DB_NAME = os.getenv("DB_NAME", "bot.db")
 
 MAX_REMINDERS = 10
