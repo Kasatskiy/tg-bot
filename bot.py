@@ -22,8 +22,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8710757819:AAFra83pBHkxPT9m6BYJRY9kEh8Akry39gI")
 DB_NAME = os.getenv("DB_NAME", "bot.db")
 
-print("код, новый код работает")
-
 MAX_REMINDERS = 10
 MAX_TITLE_LEN = 64
 MAX_TIMES = 10
@@ -42,62 +40,6 @@ WEEKDAYS = {
 COUNTRY_TIMEZONES = {
     "чехия": "Europe/Prague",
     "украина": "Europe/Kyiv",
-    "польша": "Europe/Warsaw",
-    "германия": "Europe/Berlin",
-    "грузия": "Asia/Tbilisi",
-    "казахстан": "Asia/Almaty",
-    "литва": "Europe/Vilnius",
-    "латвия": "Europe/Riga",
-    "эстония": "Europe/Tallinn",
-    "молдова": "Europe/Chisinau",
-    "румыния": "Europe/Bucharest",
-    "болгария": "Europe/Sofia",
-    "турция": "Europe/Istanbul",
-    "армения": "Asia/Yerevan",
-    "азербайджан": "Asia/Baku",
-    "израиль": "Asia/Jerusalem",
-    "кипр": "Asia/Nicosia",
-    "сербия": "Europe/Belgrade",
-    "хорватия": "Europe/Zagreb",
-    "словения": "Europe/Ljubljana",
-    "словакия": "Europe/Bratislava",
-    "венгрия": "Europe/Budapest",
-    "австрия": "Europe/Vienna",
-    "швейцария": "Europe/Zurich",
-    "италия": "Europe/Rome",
-    "испания": "Europe/Madrid",
-    "франция": "Europe/Paris",
-    "нидерланды": "Europe/Amsterdam",
-    "бельгия": "Europe/Brussels",
-    "норвегия": "Europe/Oslo",
-    "швеция": "Europe/Stockholm",
-    "финляндия": "Europe/Helsinki",
-    "дания": "Europe/Copenhagen",
-    "португалия": "Europe/Lisbon",
-    "ирландия": "Europe/Dublin",
-    "великобритания": "Europe/London",
-    "англия": "Europe/London",
-    "черногория": "Europe/Podgorica",
-    "босния": "Europe/Sarajevo",
-    "албания": "Europe/Tirane",
-    "македония": "Europe/Skopje",
-    "греция": "Europe/Athens",
-    "оаэ": "Asia/Dubai",
-    "дубай": "Asia/Dubai",
-    "узбекистан": "Asia/Tashkent",
-    "кыргызстан": "Asia/Bishkek",
-    "таджикистан": "Asia/Dushanbe",
-    "туркменистан": "Asia/Ashgabat",
-    "индия": "Asia/Kolkata",
-    "таиланд": "Asia/Bangkok",
-    "вьетнам": "Asia/Ho_Chi_Minh",
-    "китай": "Asia/Shanghai",
-    "япония": "Asia/Tokyo",
-    "корея": "Asia/Seoul",
-    "южная корея": "Asia/Seoul",
-    "сша": "America/New_York",
-    "америка": "America/New_York",
-    "канада": "America/Toronto",
 }
 
 
@@ -105,9 +47,16 @@ COUNTRY_TIMEZONES = {
 # БАЗА
 # =========================
 def db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def ensure_column(cur, table_name: str, column_name: str, column_sql: str):
+    cur.execute(f"PRAGMA table_info({table_name})")
+    columns = {row[1] for row in cur.fetchall()}
+    if column_name not in columns:
+        cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
 
 
 def init_db():
@@ -129,8 +78,8 @@ def init_db():
         title TEXT NOT NULL,
         target_date TEXT NOT NULL,
         exact_end_time TEXT,
-        frequency_type TEXT NOT NULL,   -- daily / weekdays
-        mode_type TEXT NOT NULL,        -- fixed / periodic
+        frequency_type TEXT NOT NULL,
+        mode_type TEXT NOT NULL,
         times_text TEXT,
         weekdays_text TEXT,
         start_time TEXT,
@@ -148,6 +97,10 @@ def init_db():
         UNIQUE(reminder_id, sent_key)
     )
     """)
+
+    ensure_column(cur, "users", "notifications_hint_shown", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(cur, "reminders", "reminder_kind", "TEXT NOT NULL DEFAULT 'regular'")
+    ensure_column(cur, "reminders", "remind_date", "TEXT")
 
     conn.commit()
     conn.close()
@@ -184,6 +137,14 @@ def set_user_country_timezone(user_id: int, country: str, timezone_name: str):
     conn.close()
 
 
+def mark_notifications_hint_shown(user_id: int):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET notifications_hint_shown = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_active_count(user_id: int) -> int:
     conn = db()
     cur = conn.cursor()
@@ -205,18 +166,22 @@ def create_reminder_db(
     start_time: str | None,
     end_time: str | None,
     interval_minutes: int | None,
+    reminder_kind: str = "regular",
+    remind_date: str | None = None,
 ):
     conn = db()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO reminders (
             user_id, title, target_date, exact_end_time, frequency_type, mode_type,
-            times_text, weekdays_text, start_time, end_time, interval_minutes, active
+            times_text, weekdays_text, start_time, end_time, interval_minutes,
+            active, reminder_kind, remind_date
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
     """, (
         user_id, title, target_date, exact_end_time, frequency_type, mode_type,
-        times_text, weekdays_text, start_time, end_time, interval_minutes
+        times_text, weekdays_text, start_time, end_time, interval_minutes,
+        reminder_kind, remind_date
     ))
     conn.commit()
     conn.close()
@@ -237,6 +202,8 @@ def update_reminder_db(reminder_id: int, user_id: int, data: dict):
             start_time = ?,
             end_time = ?,
             interval_minutes = ?,
+            reminder_kind = ?,
+            remind_date = ?,
             active = 1
         WHERE id = ? AND user_id = ?
     """, (
@@ -250,6 +217,8 @@ def update_reminder_db(reminder_id: int, user_id: int, data: dict):
         data.get("start_time"),
         data.get("end_time"),
         data.get("interval_minutes"),
+        data.get("reminder_kind", "regular"),
+        data.get("remind_date"),
         reminder_id,
         user_id,
     ))
@@ -292,16 +261,7 @@ def delete_all_reminders_db(user_id: int):
     conn.close()
 
 
-def was_sent(reminder_id: int, sent_key: str) -> bool:
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM sent_log WHERE reminder_id = ? AND sent_key = ?", (reminder_id, sent_key))
-    row = cur.fetchone()
-    conn.close()
-    return row is not None
-
-
-def mark_sent(reminder_id: int, sent_key: str):
+def try_mark_sent(reminder_id: int, sent_key: str) -> bool:
     conn = db()
     cur = conn.cursor()
     cur.execute(
@@ -309,7 +269,9 @@ def mark_sent(reminder_id: int, sent_key: str):
         (reminder_id, sent_key),
     )
     conn.commit()
+    inserted = cur.rowcount > 0
     conn.close()
+    return inserted
 
 
 def deactivate_reminder(reminder_id: int):
@@ -325,7 +287,6 @@ def deactivate_reminder(reminder_id: int):
 # =========================
 class CountrySetup(StatesGroup):
     choose = State()
-    manual = State()
 
 
 class CreateReminder(StatesGroup):
@@ -343,11 +304,26 @@ class CreateReminder(StatesGroup):
     edit_field = State()
 
 
+class OneTimeReminder(StatesGroup):
+    title = State()
+    target_date = State()
+    remind_date = State()
+    ask_exact_end = State()
+    exact_end_time = State()
+    mode = State()
+    fixed_times = State()
+    periodic_range = State()
+    periodic_interval = State()
+    confirm = State()
+    edit_field = State()
+
+
 class EditReminder(StatesGroup):
     pick = State()
     field = State()
     title = State()
     target_date = State()
+    remind_date = State()
     ask_exact_end = State()
     exact_end_time = State()
     frequency = State()
@@ -405,6 +381,7 @@ def parse_times_space(text: str):
 
     result = []
     seen = set()
+
     for part in parts:
         t = parse_hhmm(part)
         if not t or t == "24:00":
@@ -460,11 +437,15 @@ def reminder_finish_dt(rem: dict, timezone_name: str) -> datetime:
         hh, mm = map(int, end_time_text.split(":"))
         return datetime.combine(d, time(hh, mm), tzinfo=tz)
 
-    return datetime.combine(d, time(23, 59), tzinfo=tz)
+    return datetime.combine(d + timedelta(days=1), time(0, 0), tzinfo=tz)
 
 
 def format_date_ru(iso_date: str):
     return date.fromisoformat(iso_date).strftime("%d.%m.%Y")
+
+
+def format_dt_ru(dt: datetime):
+    return dt.strftime("%d.%m.%Y в %H:%M")
 
 
 def format_duration_parts(total_seconds: int):
@@ -490,30 +471,25 @@ def reminder_text(rem: dict, timezone_name: str):
         return f'До {rem["title"]} осталось {days} дн. {hours} ч. {minutes} мин.'
 
     diff_days = (finish_dt.date() - user_now.date()).days
-    if diff_days <= 0:
+    if diff_days <= 1:
         return f'Сегодня {rem["title"]}'
-    return f'До {rem["title"]} осталось {diff_days} дней'
+    return f'До {rem["title"]} осталось {diff_days - 1} дней'
 
 
-def get_status_text(rem: dict, timezone_name: str):
-    user_now = get_user_now(timezone_name)
-    finish_dt = reminder_finish_dt(rem, timezone_name)
-
-    if user_now > finish_dt:
-        return "завершен"
-
-    if rem.get("exact_end_time"):
-        diff_seconds = int((finish_dt - user_now).total_seconds())
-        days, hours, minutes = format_duration_parts(diff_seconds)
-        return f"заеб идет · {days} дн. {hours} ч. {minutes} мин."
-
-    diff_days = (finish_dt.date() - user_now.date()).days
-    if diff_days <= 0:
-        return "заеб идет · сегодня последний день"
-    return f"заеб идет · осталось {diff_days} дн."
+def reminder_kind_label(rem: dict):
+    return "одноразовый" if rem.get("reminder_kind") == "one_time" else "обычный"
 
 
 def reminder_brief(rem: dict):
+    if rem.get("reminder_kind") == "one_time":
+        base = f'Одноразовый · день напоминания: {format_date_ru(rem["remind_date"])}'
+        if rem["mode_type"] == "fixed":
+            return f'{base} · в {rem["times_text"].replace(",", " ")}'
+        return (
+            f'{base} · с {rem["start_time"]} до {rem["end_time"]} '
+            f'каждые {rem["interval_minutes"]} мин.'
+        )
+
     if rem["frequency_type"] == "daily":
         freq_text = "Каждый день"
     else:
@@ -530,10 +506,15 @@ def build_summary(data: dict):
     lines.append(f'Повод: {data["title"]}')
     lines.append(f'До: {format_date_ru(data["target_date"])}')
 
+    if data.get("reminder_kind") == "one_time":
+        lines.append(f'День напоминания: {format_date_ru(data["remind_date"])}')
+
     if data.get("exact_end_time"):
         lines.append(f'Точный конец: {data["exact_end_time"]}')
 
-    if data["frequency_type"] == "daily":
+    if data.get("reminder_kind") == "one_time":
+        lines.append("Тип: одноразовый")
+    elif data["frequency_type"] == "daily":
         lines.append("Частота: каждый день")
     else:
         days = [WEEKDAYS[int(x)] for x in data["weekdays_text"].split(",") if x != ""]
@@ -551,15 +532,105 @@ def build_summary(data: dict):
     return "\n".join(lines)
 
 
+def reminder_matches_day(rem: dict, day: date) -> bool:
+    if rem.get("reminder_kind") == "one_time":
+        return rem.get("remind_date") == day.isoformat()
+
+    if day > date.fromisoformat(rem["target_date"]):
+        return False
+
+    if rem["frequency_type"] == "daily":
+        return True
+
+    if rem["frequency_type"] == "weekdays":
+        days = [int(x) for x in rem["weekdays_text"].split(",")] if rem.get("weekdays_text") else []
+        return day.weekday() in days
+
+    return False
+
+
+def iter_day_candidates(rem: dict, day: date, timezone_name: str):
+    tz = ZoneInfo(timezone_name)
+    finish_dt = reminder_finish_dt(rem, timezone_name)
+
+    if not reminder_matches_day(rem, day):
+        return []
+
+    candidates = []
+
+    if rem["mode_type"] == "fixed":
+        times = rem["times_text"].split(",") if rem.get("times_text") else []
+        for t in times:
+            hh, mm = map(int, t.split(":"))
+            dt = datetime.combine(day, time(hh, mm), tzinfo=tz)
+            if dt < finish_dt:
+                candidates.append(dt)
+
+    elif rem["mode_type"] == "periodic":
+        if rem.get("start_time") and rem.get("end_time") and rem.get("interval_minutes"):
+            start_minutes = parse_minutes_hhmm(rem["start_time"])
+            end_minutes = parse_minutes_hhmm(rem["end_time"])
+            interval = int(rem["interval_minutes"])
+            minute = start_minutes
+            while minute < end_minutes:
+                hh = minute // 60
+                mm = minute % 60
+                dt = datetime.combine(day, time(hh, mm), tzinfo=tz)
+                if dt < finish_dt:
+                    candidates.append(dt)
+                minute += interval
+
+    return candidates
+
+
+def next_notification_dt(rem: dict, timezone_name: str) -> datetime | None:
+    now = get_user_now(timezone_name)
+    finish_dt = reminder_finish_dt(rem, timezone_name)
+
+    if now >= finish_dt:
+        return None
+
+    start_day = now.date()
+    end_day = date.fromisoformat(rem["target_date"])
+
+    if rem.get("reminder_kind") == "one_time":
+        remind_day = date.fromisoformat(rem["remind_date"])
+        if remind_day < start_day or remind_day > end_day:
+            return None
+        for dt in iter_day_candidates(rem, remind_day, timezone_name):
+            if dt >= now and dt < finish_dt:
+                return dt
+        return None
+
+    day = start_day
+    while day <= end_day:
+        for dt in iter_day_candidates(rem, day, timezone_name):
+            if dt >= now and dt < finish_dt:
+                return dt
+        day += timedelta(days=1)
+
+    return None
+
+
+def get_next_notification_text(rem: dict, timezone_name: str):
+    dt = next_notification_dt(rem, timezone_name)
+    if not dt:
+        return "больше уведомлений не будет"
+    return format_dt_ru(dt)
+
+
 def list_numbered_reminders(reminders: list[dict], timezone_name: str):
     parts = []
     for i, rem in enumerate(reminders, start=1):
         extra = f'\nТочный конец: {rem["exact_end_time"]}' if rem.get("exact_end_time") else ""
+        remind_extra = ""
+        if rem.get("reminder_kind") == "one_time":
+            remind_extra = f'\nДень напоминания: {format_date_ru(rem["remind_date"])}'
         parts.append(
             f'{i}. {rem["title"]}\n'
-            f'До: {format_date_ru(rem["target_date"])}{extra}\n'
+            f'До: {format_date_ru(rem["target_date"])}{remind_extra}{extra}\n'
             f"{reminder_brief(rem)}\n"
-            f"Статус: {get_status_text(rem, timezone_name)}"
+            f'Следующее уведомление: {get_next_notification_text(rem, timezone_name)}'
         )
     return "\n\n".join(parts)
 
@@ -572,33 +643,30 @@ async def reset_misclick(state: FSMContext):
 
 
 async def misclick_reply(message: Message, state: FSMContext, key: str, reply_markup=None):
-    data = await state.get_data()
-    prev_key = data.get("_misclick_key")
-    prev_count = data.get("_misclick_count", 0)
-
-    count = prev_count + 1 if prev_key == key else 1
-
-    await state.update_data(_misclick_key=key, _misclick_count=count)
-
-    if count >= 3:
-        await message.answer("Перестань жмякать.", reply_markup=reply_markup)
-    else:
-        await message.answer("Перестань тыкать куда попало.", reply_markup=reply_markup)
+    await state.update_data(_misclick_key=key)
+    await message.answer(
+        "чел, используй кнопки пожалуйста, Денис очень старался делая их.",
+        reply_markup=reply_markup,
+    )
 
 
 # =========================
 # КНОПКИ
 # =========================
-def main_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Сделать новый заеб")],
-            [KeyboardButton(text="Показать заебы")],
-            [KeyboardButton(text="Изменить страну")],
-            [KeyboardButton(text="Заебал")],
-        ],
-        resize_keyboard=True,
-    )
+def main_menu_inline():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="Сделать новый заеб", callback_data="menu:create_regular"))
+    builder.row(InlineKeyboardButton(text="Одноразовый заеб", callback_data="menu:create_one_time"))
+    builder.row(InlineKeyboardButton(text="Показать заебы", callback_data="menu:show"))
+    builder.row(InlineKeyboardButton(text="Заебал", callback_data="menu:delete"))
+    return builder.as_markup()
+
+
+def country_inline():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="Украина", callback_data="country:ukraine"))
+    builder.row(InlineKeyboardButton(text="Чехия", callback_data="country:czechia"))
+    return builder.as_markup()
 
 
 def back_kb():
@@ -676,18 +744,6 @@ def periodic_interval_kb():
     )
 
 
-def country_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Чехия")],
-            [KeyboardButton(text="Украина")],
-            [KeyboardButton(text="Другая")],
-            [KeyboardButton(text="Назад")],
-        ],
-        resize_keyboard=True,
-    )
-
-
 def select_reminder_kb(reminders: list[dict], with_delete_all: bool = False):
     rows = []
     for i, rem in enumerate(reminders, start=1):
@@ -698,7 +754,18 @@ def select_reminder_kb(reminders: list[dict], with_delete_all: bool = False):
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-def edit_field_kb(freq_type: str):
+def edit_field_kb(reminder_kind: str, freq_type: str | None = None):
+    if reminder_kind == "one_time":
+        rows = [
+            [KeyboardButton(text="Повод")],
+            [KeyboardButton(text="Дату")],
+            [KeyboardButton(text="День напоминания")],
+            [KeyboardButton(text="Точное время конца")],
+            [KeyboardButton(text="Время")],
+            [KeyboardButton(text="Назад")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
     rows = [
         [KeyboardButton(text="Повод")],
         [KeyboardButton(text="Дату")],
@@ -763,11 +830,15 @@ async def clear_weekdays_picker(state: FSMContext, chat_id: int):
         await state.update_data(_weekdays_msg_id=None)
 
 
+async def send_main_menu(message: Message, text: str = "Главное меню."):
+    await message.answer(text, reply_markup=main_menu_inline())
+
+
 async def render_country_step(message: Message):
     await message.answer(
-        "Из какой ты страны?\n\n"
-        "Это нужно, чтобы я заебывал тебя по твоему местному времени, а не как попало.",
-        reply_markup=country_kb(),
+        "Где ты живешь.\n\n"
+        "Это нужно для определения твоего часового пояса.",
+        reply_markup=country_inline(),
     )
 
 
@@ -790,7 +861,10 @@ async def render_weekdays_step(message: Message, state: FSMContext):
 async def render_step(message: Message, state: FSMContext, state_name: str):
     data = await state.get_data()
 
-    if state_name not in {CreateReminder.weekdays_pick.state, EditReminder.weekdays_pick.state}:
+    if state_name not in {
+        CreateReminder.weekdays_pick.state,
+        EditReminder.weekdays_pick.state,
+    }:
         await clear_weekdays_picker(state, message.chat.id)
 
     if state_name == CreateReminder.title.state:
@@ -799,8 +873,8 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
 
     if state_name == CreateReminder.target_date.state:
         await message.answer(
-            "До какого числа тебя заебывать?\n\n"
-            "Пиши так: 020726\n\n"
+            "До какой даты тебя заебывать?\n\n"
+            "Пиши в таком формате: 020726\n\n"
             "Это значит:\n"
             "02.07.2026",
             reply_markup=back_kb(),
@@ -809,8 +883,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
 
     if state_name == CreateReminder.ask_exact_end.state:
         await message.answer(
-            "Хочешь настроить точное время конца?\n\n"
-            "Если да — потом введёшь время так: 1400",
+            "Хочешь настроить точное время конца?",
             reply_markup=yes_no_back_kb(),
         )
         return
@@ -818,7 +891,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
     if state_name == CreateReminder.exact_end_time.state:
         await message.answer(
             "Введи точное время конца.\n\n"
-            "Пиши так: 1400\n\n"
+            "Пиши в таком формате: 1400\n\n"
             "Это значит:\n"
             "14:00",
             reply_markup=back_kb(),
@@ -840,7 +913,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
     if state_name == CreateReminder.fixed_times.state:
         await message.answer(
             "Введи время, в которое тебя заёбывать.\n\n"
-            "Пиши так: 1400\n"
+            "Пиши в таком формате: 1400\n"
             "Если нужно несколько — так: 1400 1600 2130\n\n"
             "Это значит:\n"
             "14:00\n"
@@ -852,7 +925,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
     if state_name == CreateReminder.periodic_range.state:
         await message.answer(
             "Введи промежуток времени, в который тебя заебывать.\n\n"
-            "Пиши так: 2300 2400\n\n"
+            "Пиши в таком формате: 2300 2400\n\n"
             "Это значит:\n"
             "с 23:00 до 24:00",
             reply_markup=back_kb(),
@@ -868,7 +941,92 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
         return
 
     if state_name == CreateReminder.edit_field.state:
-        await message.answer("Что будем менять?", reply_markup=edit_field_kb(data["frequency_type"]))
+        await message.answer(
+            "Что будем менять?",
+            reply_markup=edit_field_kb("regular", data.get("frequency_type")),
+        )
+        return
+
+    if state_name == OneTimeReminder.title.state:
+        await message.answer("Введи повод заеба.", reply_markup=back_kb())
+        return
+
+    if state_name == OneTimeReminder.target_date.state:
+        await message.answer(
+            "До какой даты тебя заебывать?\n\n"
+            "Пиши в таком формате: 020726\n\n"
+            "Это значит:\n"
+            "02.07.2026",
+            reply_markup=back_kb(),
+        )
+        return
+
+    if state_name == OneTimeReminder.remind_date.state:
+        await message.answer(
+            "В какой день напомнить?\n\n"
+            "Пиши в таком формате: 020726\n\n"
+            "Это значит:\n"
+            "02.07.2026",
+            reply_markup=back_kb(),
+        )
+        return
+
+    if state_name == OneTimeReminder.ask_exact_end.state:
+        await message.answer(
+            "Хочешь настроить точное время конца?",
+            reply_markup=yes_no_back_kb(),
+        )
+        return
+
+    if state_name == OneTimeReminder.exact_end_time.state:
+        await message.answer(
+            "Введи точное время конца.\n\n"
+            "Пиши в таком формате: 1400\n\n"
+            "Это значит:\n"
+            "14:00",
+            reply_markup=back_kb(),
+        )
+        return
+
+    if state_name == OneTimeReminder.mode.state:
+        await message.answer("Как именно тебя заебывать?", reply_markup=mode_kb())
+        return
+
+    if state_name == OneTimeReminder.fixed_times.state:
+        await message.answer(
+            "Введи время, в которое тебя заёбывать.\n\n"
+            "Пиши в таком формате: 1400\n"
+            "Если нужно несколько — так: 1400 1600 2130\n\n"
+            "Это значит:\n"
+            "14:00\n"
+            "или 14:00 16:00 21:30",
+            reply_markup=back_kb(),
+        )
+        return
+
+    if state_name == OneTimeReminder.periodic_range.state:
+        await message.answer(
+            "Введи промежуток времени, в который тебя заебывать.\n\n"
+            "Пиши в таком формате: 2300 2400\n\n"
+            "Это значит:\n"
+            "с 23:00 до 24:00",
+            reply_markup=back_kb(),
+        )
+        return
+
+    if state_name == OneTimeReminder.periodic_interval.state:
+        await message.answer("Как часто заебывать в этом промежутке?", reply_markup=periodic_interval_kb())
+        return
+
+    if state_name == OneTimeReminder.confirm.state:
+        await message.answer(build_summary(data), reply_markup=save_edit_back_kb())
+        return
+
+    if state_name == OneTimeReminder.edit_field.state:
+        await message.answer(
+            "Что будем менять?",
+            reply_markup=edit_field_kb("one_time"),
+        )
         return
 
     if state_name == EditReminder.pick.state:
@@ -877,7 +1035,10 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
         return
 
     if state_name == EditReminder.field.state:
-        await message.answer("Что будем менять?", reply_markup=edit_field_kb(data["frequency_type"]))
+        await message.answer(
+            "Что будем менять?",
+            reply_markup=edit_field_kb(data.get("reminder_kind", "regular"), data.get("frequency_type")),
+        )
         return
 
     if state_name == EditReminder.title.state:
@@ -887,7 +1048,17 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
     if state_name == EditReminder.target_date.state:
         await message.answer(
             "Введи новую дату.\n\n"
-            "Пиши так: 020726\n\n"
+            "Пиши в таком формате: 020726\n\n"
+            "Это значит:\n"
+            "02.07.2026",
+            reply_markup=back_kb(),
+        )
+        return
+
+    if state_name == EditReminder.remind_date.state:
+        await message.answer(
+            "Введи новый день напоминания.\n\n"
+            "Пиши в таком формате: 020726\n\n"
             "Это значит:\n"
             "02.07.2026",
             reply_markup=back_kb(),
@@ -896,8 +1067,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
 
     if state_name == EditReminder.ask_exact_end.state:
         await message.answer(
-            "Хочешь настроить точное время конца?\n\n"
-            "Если да — потом введёшь время так: 1400",
+            "Хочешь настроить точное время конца?",
             reply_markup=yes_no_back_kb(),
         )
         return
@@ -905,7 +1075,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
     if state_name == EditReminder.exact_end_time.state:
         await message.answer(
             "Введи точное время конца.\n\n"
-            "Пиши так: 1400\n\n"
+            "Пиши в таком формате: 1400\n\n"
             "Это значит:\n"
             "14:00",
             reply_markup=back_kb(),
@@ -927,7 +1097,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
     if state_name == EditReminder.fixed_times.state:
         await message.answer(
             "Введи время, в которое тебя заёбывать.\n\n"
-            "Пиши так: 1400\n"
+            "Пиши в таком формате: 1400\n"
             "Если нужно несколько — так: 1400 1600 2130\n\n"
             "Это значит:\n"
             "14:00\n"
@@ -939,7 +1109,7 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
     if state_name == EditReminder.periodic_range.state:
         await message.answer(
             "Введи промежуток времени, в который тебя заебывать.\n\n"
-            "Пиши так: 2300 2400\n\n"
+            "Пиши в таком формате: 2300 2400\n\n"
             "Это значит:\n"
             "с 23:00 до 24:00",
             reply_markup=back_kb(),
@@ -965,10 +1135,13 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
             return
 
         rem = data["delete_reminder"]
+        remind_extra = ""
+        if rem.get("reminder_kind") == "one_time":
+            remind_extra = f'\nДень напоминания: {format_date_ru(rem["remind_date"])}'
         await message.answer(
             "Точно удалить этот заеб?\n\n"
             f'Повод: {rem["title"]}\n'
-            f'До: {format_date_ru(rem["target_date"])}\n'
+            f'До: {format_date_ru(rem["target_date"])}{remind_extra}\n'
             f"Расписание: {reminder_brief(rem)}",
             reply_markup=delete_confirm_kb(),
         )
@@ -1000,55 +1173,148 @@ async def start_cmd(message: Message, state: FSMContext):
 
     await message.answer(
         "Привет.\nЯ буду заебывать тебя до нужной даты.\n\nВыбирай:",
-        reply_markup=main_menu(),
+        reply_markup=main_menu_inline(),
     )
 
 
-@dp.message(F.text == "Изменить страну")
-async def change_country(message: Message, state: FSMContext):
+@dp.callback_query(F.data == "country:ukraine")
+async def country_ukraine(callback: CallbackQuery, state: FSMContext):
+    ensure_user(callback.from_user.id)
+    set_user_country_timezone(callback.from_user.id, "Украина", "Europe/Kyiv")
     await state.clear()
-    await reset_misclick(state)
-    await state.set_state(CountrySetup.choose)
-    await render_country_step(message)
-
-
-@dp.message(CountrySetup.choose, F.text == "Чехия")
-async def country_czech(message: Message, state: FSMContext):
-    set_user_country_timezone(message.from_user.id, "Чехия", "Europe/Prague")
-    await state.clear()
-    await message.answer("красавчик хорошая страна.\nТеперь выбирай, что делать.", reply_markup=main_menu())
-
-
-@dp.message(CountrySetup.choose, F.text == "Украина")
-async def country_ukraine(message: Message, state: FSMContext):
-    set_user_country_timezone(message.from_user.id, "Украина", "Europe/Kyiv")
-    await state.clear()
-    await message.answer("красавчик хорошая страна.\nТеперь выбирай, что делать.", reply_markup=main_menu())
-
-
-@dp.message(CountrySetup.choose, F.text == "Другая")
-async def country_other(message: Message, state: FSMContext):
-    await reset_misclick(state)
-    await push_history(state, CountrySetup.choose.state)
-    await state.set_state(CountrySetup.manual)
-    await message.answer(
-        "Напиши свою страну.\n\nЭто нужно, чтобы я правильно считал время.",
-        reply_markup=back_kb(),
+    await callback.answer()
+    await callback.message.answer(
+        "красавчик хорошая страна.\nТеперь выбирай, что делать.",
+        reply_markup=main_menu_inline(),
     )
 
 
-@dp.message(CountrySetup.manual)
-async def country_manual(message: Message, state: FSMContext):
-    country_raw = (message.text or "").strip()
-    tz = get_timezone_by_country(country_raw)
-    if not tz:
-        await message.answer("Хуйня. Не понял страну.\nПопробуй ещё раз.", reply_markup=back_kb())
+@dp.callback_query(F.data == "country:czechia")
+async def country_czech(callback: CallbackQuery, state: FSMContext):
+    ensure_user(callback.from_user.id)
+    set_user_country_timezone(callback.from_user.id, "Чехия", "Europe/Prague")
+    await state.clear()
+    await callback.answer()
+    await callback.message.answer(
+        "красавчик хорошая страна.\nТеперь выбирай, что делать.",
+        reply_markup=main_menu_inline(),
+    )
+
+
+# =========================
+# ИНЛАЙН МЕНЮ
+# =========================
+@dp.callback_query(F.data == "menu:create_regular")
+async def menu_create_regular(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user = get_user(callback.from_user.id)
+    if not user or not user.get("timezone"):
+        await state.set_state(CountrySetup.choose)
+        await callback.message.answer(
+            "Сначала выбери страну.",
+            reply_markup=country_inline(),
+        )
         return
 
-    country_display = country_raw.strip().title()
-    set_user_country_timezone(message.from_user.id, country_display, tz)
+    if get_active_count(callback.from_user.id) >= MAX_REMINDERS:
+        await callback.message.answer(
+            f"У тебя уже {MAX_REMINDERS} заебов.\nСначала удали один.",
+            reply_markup=main_menu_inline(),
+        )
+        return
+
     await state.clear()
-    await message.answer("красавчик хорошая страна.\nТеперь выбирай, что делать.", reply_markup=main_menu())
+    await reset_misclick(state)
+    await state.update_data(
+        _history=[],
+        _weekdays_msg_id=None,
+        _create_edit_mode=False,
+        _create_edit_target=None,
+        reminder_kind="regular",
+        remind_date=None,
+    )
+    await state.set_state(CreateReminder.title)
+    await render_step(callback.message, state, CreateReminder.title.state)
+
+
+@dp.callback_query(F.data == "menu:create_one_time")
+async def menu_create_one_time(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user = get_user(callback.from_user.id)
+    if not user or not user.get("timezone"):
+        await state.set_state(CountrySetup.choose)
+        await callback.message.answer(
+            "Сначала выбери страну.",
+            reply_markup=country_inline(),
+        )
+        return
+
+    if get_active_count(callback.from_user.id) >= MAX_REMINDERS:
+        await callback.message.answer(
+            f"У тебя уже {MAX_REMINDERS} заебов.\nСначала удали один.",
+            reply_markup=main_menu_inline(),
+        )
+        return
+
+    await state.clear()
+    await reset_misclick(state)
+    await state.update_data(
+        _history=[],
+        _create_edit_mode=False,
+        _create_edit_target=None,
+        reminder_kind="one_time",
+        frequency_type="one_time",
+        weekdays_text=None,
+        weekdays_selected=[],
+    )
+    await state.set_state(OneTimeReminder.title)
+    await render_step(callback.message, state, OneTimeReminder.title.state)
+
+
+@dp.callback_query(F.data == "menu:show")
+async def menu_show(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+
+    user = get_user(callback.from_user.id)
+    if not user or not user.get("timezone"):
+        await state.set_state(CountrySetup.choose)
+        await callback.message.answer(
+            "Сначала выбери страну.",
+            reply_markup=country_inline(),
+        )
+        return
+
+    reminders = get_user_reminders(callback.from_user.id)
+    if not reminders:
+        await callback.message.answer("Пока заебывать нечем.", reply_markup=main_menu_inline())
+        return
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Изменить заеб")],
+            [KeyboardButton(text="Меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+    await callback.message.answer(list_numbered_reminders(reminders, user["timezone"]), reply_markup=kb)
+
+
+@dp.callback_query(F.data == "menu:delete")
+async def menu_delete(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    reminders = get_user_reminders(callback.from_user.id)
+    if not reminders:
+        await state.clear()
+        await callback.message.answer("Пока заебывать нечем.", reply_markup=main_menu_inline())
+        return
+
+    await state.clear()
+    await reset_misclick(state)
+    await state.update_data(_history=[], pick_list=reminders)
+    await state.set_state(DeleteReminder.pick)
+    await render_step(callback.message, state, DeleteReminder.pick.state)
 
 
 # =========================
@@ -1086,24 +1352,19 @@ async def weekday_toggle(callback: CallbackQuery, state: FSMContext):
 async def back_handler(message: Message, state: FSMContext):
     current = await state.get_state()
     if not current:
-        await message.answer("Ты уже в меню.", reply_markup=main_menu())
-        return
-
-    if current == CountrySetup.manual.state:
-        await state.set_state(CountrySetup.choose)
-        await render_country_step(message)
+        await send_main_menu(message)
         return
 
     prev = await pop_history(state)
     if not prev:
-        await state.clear()
         await clear_weekdays_picker(state, message.chat.id)
-        await message.answer("Окей, возвращаю в меню.", reply_markup=main_menu())
+        await state.clear()
+        await send_main_menu(message, "Окей, возвращаю в меню.")
         return
 
     state_map = {
         CountrySetup.choose.state: CountrySetup.choose,
-        CountrySetup.manual.state: CountrySetup.manual,
+
         CreateReminder.title.state: CreateReminder.title,
         CreateReminder.target_date.state: CreateReminder.target_date,
         CreateReminder.ask_exact_end.state: CreateReminder.ask_exact_end,
@@ -1116,10 +1377,24 @@ async def back_handler(message: Message, state: FSMContext):
         CreateReminder.periodic_interval.state: CreateReminder.periodic_interval,
         CreateReminder.confirm.state: CreateReminder.confirm,
         CreateReminder.edit_field.state: CreateReminder.edit_field,
+
+        OneTimeReminder.title.state: OneTimeReminder.title,
+        OneTimeReminder.target_date.state: OneTimeReminder.target_date,
+        OneTimeReminder.remind_date.state: OneTimeReminder.remind_date,
+        OneTimeReminder.ask_exact_end.state: OneTimeReminder.ask_exact_end,
+        OneTimeReminder.exact_end_time.state: OneTimeReminder.exact_end_time,
+        OneTimeReminder.mode.state: OneTimeReminder.mode,
+        OneTimeReminder.fixed_times.state: OneTimeReminder.fixed_times,
+        OneTimeReminder.periodic_range.state: OneTimeReminder.periodic_range,
+        OneTimeReminder.periodic_interval.state: OneTimeReminder.periodic_interval,
+        OneTimeReminder.confirm.state: OneTimeReminder.confirm,
+        OneTimeReminder.edit_field.state: OneTimeReminder.edit_field,
+
         EditReminder.pick.state: EditReminder.pick,
         EditReminder.field.state: EditReminder.field,
         EditReminder.title.state: EditReminder.title,
         EditReminder.target_date.state: EditReminder.target_date,
+        EditReminder.remind_date.state: EditReminder.remind_date,
         EditReminder.ask_exact_end.state: EditReminder.ask_exact_end,
         EditReminder.exact_end_time.state: EditReminder.exact_end_time,
         EditReminder.frequency.state: EditReminder.frequency,
@@ -1129,6 +1404,7 @@ async def back_handler(message: Message, state: FSMContext):
         EditReminder.periodic_range.state: EditReminder.periodic_range,
         EditReminder.periodic_interval.state: EditReminder.periodic_interval,
         EditReminder.confirm.state: EditReminder.confirm,
+
         DeleteReminder.pick.state: DeleteReminder.pick,
         DeleteReminder.confirm.state: DeleteReminder.confirm,
     }
@@ -1138,32 +1414,8 @@ async def back_handler(message: Message, state: FSMContext):
 
 
 # =========================
-# СОЗДАНИЕ
+# СОЗДАНИЕ ОБЫЧНОГО ЗАЕБА
 # =========================
-@dp.message(F.text == "Сделать новый заеб")
-async def create_start(message: Message, state: FSMContext):
-    user = get_user(message.from_user.id)
-    if not user or not user.get("timezone"):
-        await state.set_state(CountrySetup.choose)
-        await render_country_step(message)
-        return
-
-    if get_active_count(message.from_user.id) >= MAX_REMINDERS:
-        await message.answer(f"У тебя уже {MAX_REMINDERS} заебов.\nСначала удали один.", reply_markup=main_menu())
-        return
-
-    await state.clear()
-    await reset_misclick(state)
-    await state.update_data(
-        _history=[],
-        _weekdays_msg_id=None,
-        _create_edit_mode=False,
-        _create_edit_target=None,
-    )
-    await state.set_state(CreateReminder.title)
-    await render_step(message, state, CreateReminder.title.state)
-
-
 @dp.message(CreateReminder.title)
 async def create_title(message: Message, state: FSMContext):
     title = (message.text or "").strip()
@@ -1197,7 +1449,10 @@ async def create_target_date(message: Message, state: FSMContext):
 
     d = parse_date_ddmmyy(message.text or "")
     if not d:
-        await message.answer("Хуйня. Напиши нормально.\n\nФормат: 020726\nЭто значит: 02.07.2026", reply_markup=back_kb())
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 020726\nЭто значит: 02.07.2026",
+            reply_markup=back_kb(),
+        )
         return
     if d < user_now.date():
         await message.answer("Дурак совсем? Это ведь прошлое.", reply_markup=back_kb())
@@ -1249,7 +1504,10 @@ async def create_exact_end_no(message: Message, state: FSMContext):
 async def create_exact_end_time(message: Message, state: FSMContext):
     parsed = parse_hhmm(message.text or "")
     if not parsed:
-        await message.answer("Хуйня. Напиши нормально.\n\nПиши так: 1400\nЭто значит: 14:00", reply_markup=back_kb())
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 1400\nЭто значит: 14:00",
+            reply_markup=back_kb(),
+        )
         return
 
     await reset_misclick(state)
@@ -1371,7 +1629,7 @@ async def create_fixed_times(message: Message, state: FSMContext):
     if not times:
         await message.answer(
             "Хуйня. Напиши нормально.\n\n"
-            "Пиши так: 1400\n"
+            "Пиши в таком формате: 1400\n"
             "Если нужно несколько — так: 1400 1600 2130\n\n"
             "Это значит: 14:00 16:00 21:30",
             reply_markup=back_kb(),
@@ -1396,7 +1654,7 @@ async def create_periodic_range(message: Message, state: FSMContext):
     if not result:
         await message.answer(
             "Хуйня. Напиши нормально.\n\n"
-            "Формат: 2300 2400\n"
+            "Пиши в таком формате: 2300 2400\n"
             "Это значит: с 23:00 до 24:00",
             reply_markup=back_kb(),
         )
@@ -1478,9 +1736,19 @@ async def create_save(message: Message, state: FSMContext):
         start_time=data.get("start_time"),
         end_time=data.get("end_time"),
         interval_minutes=data.get("interval_minutes"),
+        reminder_kind="regular",
+        remind_date=None,
     )
+
+    user = get_user(message.from_user.id)
     await state.clear()
-    await message.answer("Готово. Начинаю заебывать.", reply_markup=main_menu())
+    await message.answer("Готово. Начинаю заебывать.", reply_markup=main_menu_inline())
+
+    if user and not user.get("notifications_hint_shown"):
+        mark_notifications_hint_shown(message.from_user.id)
+        await message.answer(
+            "Включи уведомления у бота, чтобы я мог нормально заебывать."
+        )
 
 
 @dp.message(CreateReminder.confirm, F.text == "Изменить")
@@ -1531,7 +1799,7 @@ async def create_edit_type(message: Message, state: FSMContext):
 async def create_edit_days(message: Message, state: FSMContext):
     data = await state.get_data()
     if data.get("frequency_type") != "weekdays":
-        await message.answer("У этого заеба нет дней недели.", reply_markup=edit_field_kb(data["frequency_type"]))
+        await message.answer("У этого заеба нет дней недели.", reply_markup=edit_field_kb("regular", data["frequency_type"]))
         return
 
     await reset_misclick(state)
@@ -1557,6 +1825,377 @@ async def create_edit_time(message: Message, state: FSMContext):
 
 
 # =========================
+# СОЗДАНИЕ ОДНОРАЗОВОГО ЗАЕБА
+# =========================
+@dp.message(OneTimeReminder.title)
+async def one_time_title(message: Message, state: FSMContext):
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Хуйня. Введи повод нормально.", reply_markup=back_kb())
+        return
+    if len(title) > MAX_TITLE_LEN:
+        await message.answer(f"Слишком длинно. Максимум {MAX_TITLE_LEN} символа.", reply_markup=back_kb())
+        return
+
+    await reset_misclick(state)
+    await state.update_data(title=title)
+
+    data = await state.get_data()
+    if data.get("_create_edit_mode") and data.get("_create_edit_target") == "title":
+        await state.update_data(_create_edit_mode=False, _create_edit_target=None)
+        await push_history(state, OneTimeReminder.title.state)
+        await state.set_state(OneTimeReminder.confirm)
+        await render_step(message, state, OneTimeReminder.confirm.state)
+        return
+
+    await push_history(state, OneTimeReminder.title.state)
+    await state.set_state(OneTimeReminder.target_date)
+    await render_step(message, state, OneTimeReminder.target_date.state)
+
+
+@dp.message(OneTimeReminder.target_date)
+async def one_time_target_date(message: Message, state: FSMContext):
+    user = get_user(message.from_user.id)
+    user_now = get_user_now(user["timezone"])
+
+    d = parse_date_ddmmyy(message.text or "")
+    if not d:
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 020726\nЭто значит: 02.07.2026",
+            reply_markup=back_kb(),
+        )
+        return
+    if d < user_now.date():
+        await message.answer("Дурак совсем? Это ведь прошлое.", reply_markup=back_kb())
+        return
+
+    await reset_misclick(state)
+    await state.update_data(target_date=d.isoformat())
+
+    data = await state.get_data()
+    if data.get("_create_edit_mode") and data.get("_create_edit_target") == "target_date":
+        await state.update_data(_create_edit_mode=False, _create_edit_target=None)
+        await push_history(state, OneTimeReminder.target_date.state)
+        await state.set_state(OneTimeReminder.confirm)
+        await render_step(message, state, OneTimeReminder.confirm.state)
+        return
+
+    await push_history(state, OneTimeReminder.target_date.state)
+    await state.set_state(OneTimeReminder.remind_date)
+    await render_step(message, state, OneTimeReminder.remind_date.state)
+
+
+@dp.message(OneTimeReminder.remind_date)
+async def one_time_remind_date(message: Message, state: FSMContext):
+    user = get_user(message.from_user.id)
+    user_now = get_user_now(user["timezone"])
+
+    d = parse_date_ddmmyy(message.text or "")
+    if not d:
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 020726\nЭто значит: 02.07.2026",
+            reply_markup=back_kb(),
+        )
+        return
+    if d < user_now.date():
+        await message.answer("Дурак совсем? Это ведь прошлое.", reply_markup=back_kb())
+        return
+
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["target_date"])
+    if d > target_date:
+        await message.answer("Хуйня. День напоминания не может быть позже конечной даты.", reply_markup=back_kb())
+        return
+
+    await reset_misclick(state)
+    await state.update_data(remind_date=d.isoformat())
+
+    if data.get("_create_edit_mode") and data.get("_create_edit_target") == "remind_date":
+        await state.update_data(_create_edit_mode=False, _create_edit_target=None)
+        await push_history(state, OneTimeReminder.remind_date.state)
+        await state.set_state(OneTimeReminder.confirm)
+        await render_step(message, state, OneTimeReminder.confirm.state)
+        return
+
+    await push_history(state, OneTimeReminder.remind_date.state)
+    await state.set_state(OneTimeReminder.ask_exact_end)
+    await render_step(message, state, OneTimeReminder.ask_exact_end.state)
+
+
+@dp.message(OneTimeReminder.ask_exact_end, F.text == "Да")
+async def one_time_exact_end_yes(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await push_history(state, OneTimeReminder.ask_exact_end.state)
+    await state.set_state(OneTimeReminder.exact_end_time)
+    await render_step(message, state, OneTimeReminder.exact_end_time.state)
+
+
+@dp.message(OneTimeReminder.ask_exact_end, F.text == "Нет")
+async def one_time_exact_end_no(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(exact_end_time=None)
+
+    data = await state.get_data()
+    if data.get("_create_edit_mode") and data.get("_create_edit_target") == "exact_end_time":
+        await state.update_data(_create_edit_mode=False, _create_edit_target=None)
+        await push_history(state, OneTimeReminder.ask_exact_end.state)
+        await state.set_state(OneTimeReminder.confirm)
+        await render_step(message, state, OneTimeReminder.confirm.state)
+        return
+
+    await push_history(state, OneTimeReminder.ask_exact_end.state)
+    await state.set_state(OneTimeReminder.mode)
+    await render_step(message, state, OneTimeReminder.mode.state)
+
+
+@dp.message(OneTimeReminder.exact_end_time)
+async def one_time_exact_end_time(message: Message, state: FSMContext):
+    parsed = parse_hhmm(message.text or "")
+    if not parsed:
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 1400\nЭто значит: 14:00",
+            reply_markup=back_kb(),
+        )
+        return
+
+    await reset_misclick(state)
+    await state.update_data(exact_end_time=parsed)
+
+    data = await state.get_data()
+    if data.get("_create_edit_mode") and data.get("_create_edit_target") == "exact_end_time":
+        await state.update_data(_create_edit_mode=False, _create_edit_target=None)
+        await push_history(state, OneTimeReminder.exact_end_time.state)
+        await state.set_state(OneTimeReminder.confirm)
+        await render_step(message, state, OneTimeReminder.confirm.state)
+        return
+
+    await push_history(state, OneTimeReminder.exact_end_time.state)
+    await state.set_state(OneTimeReminder.mode)
+    await render_step(message, state, OneTimeReminder.mode.state)
+
+
+@dp.message(OneTimeReminder.mode, F.text == "В конкретное время дня")
+async def one_time_mode_fixed(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(mode_type="fixed")
+
+    data = await state.get_data()
+    if data.get("_create_edit_mode") and data.get("_create_edit_target") == "time":
+        await push_history(state, OneTimeReminder.mode.state)
+        await state.set_state(OneTimeReminder.fixed_times)
+        await render_step(message, state, OneTimeReminder.fixed_times.state)
+        return
+
+    await push_history(state, OneTimeReminder.mode.state)
+    await state.set_state(OneTimeReminder.fixed_times)
+    await render_step(message, state, OneTimeReminder.fixed_times.state)
+
+
+@dp.message(OneTimeReminder.mode, F.text == "В промежутке")
+async def one_time_mode_periodic(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(mode_type="periodic")
+
+    data = await state.get_data()
+    if data.get("_create_edit_mode") and data.get("_create_edit_target") == "time":
+        await push_history(state, OneTimeReminder.mode.state)
+        await state.set_state(OneTimeReminder.periodic_range)
+        await render_step(message, state, OneTimeReminder.periodic_range.state)
+        return
+
+    await push_history(state, OneTimeReminder.mode.state)
+    await state.set_state(OneTimeReminder.periodic_range)
+    await render_step(message, state, OneTimeReminder.periodic_range.state)
+
+
+@dp.message(OneTimeReminder.fixed_times)
+async def one_time_fixed_times(message: Message, state: FSMContext):
+    times = parse_times_space(message.text or "")
+    if not times:
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\n"
+            "Пиши в таком формате: 1400\n"
+            "Если нужно несколько — так: 1400 1600 2130\n\n"
+            "Это значит: 14:00 16:00 21:30",
+            reply_markup=back_kb(),
+        )
+        return
+
+    await reset_misclick(state)
+    await state.update_data(
+        times_text=",".join(times),
+        start_time=None,
+        end_time=None,
+        interval_minutes=None,
+    )
+    await push_history(state, OneTimeReminder.fixed_times.state)
+    await state.set_state(OneTimeReminder.confirm)
+    await render_step(message, state, OneTimeReminder.confirm.state)
+
+
+@dp.message(OneTimeReminder.periodic_range)
+async def one_time_periodic_range(message: Message, state: FSMContext):
+    result = parse_range(message.text or "")
+    if not result:
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\n"
+            "Пиши в таком формате: 2300 2400\n"
+            "Это значит: с 23:00 до 24:00",
+            reply_markup=back_kb(),
+        )
+        return
+
+    await reset_misclick(state)
+    start_time, end_time = result
+    await state.update_data(start_time=start_time, end_time=end_time, times_text=None)
+    await push_history(state, OneTimeReminder.periodic_range.state)
+    await state.set_state(OneTimeReminder.periodic_interval)
+    await render_step(message, state, OneTimeReminder.periodic_interval.state)
+
+
+@dp.message(OneTimeReminder.periodic_interval, F.text == "Каждую 1 минуту")
+async def one_time_int_1(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await finish_one_time_periodic(message, state, 1)
+
+
+@dp.message(OneTimeReminder.periodic_interval, F.text == "Каждые 5 минут")
+async def one_time_int_5(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await finish_one_time_periodic(message, state, 5)
+
+
+@dp.message(OneTimeReminder.periodic_interval, F.text == "Каждые 30 минут")
+async def one_time_int_30(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await finish_one_time_periodic(message, state, 30)
+
+
+@dp.message(OneTimeReminder.periodic_interval, F.text == "Каждые 60 минут")
+async def one_time_int_60(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await finish_one_time_periodic(message, state, 60)
+
+
+@dp.message(OneTimeReminder.periodic_interval, F.text == "Свой интервал")
+async def one_time_custom_interval_ask(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await message.answer("Введи интервал в минутах.\nМинимум 1.", reply_markup=back_kb())
+
+
+@dp.message(OneTimeReminder.periodic_interval)
+async def one_time_custom_interval(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("Хуйня. Интервал должен быть числом.", reply_markup=back_kb())
+        return
+
+    n = int(text)
+    if n < MIN_INTERVAL:
+        await message.answer("Хуйня. Минимальный интервал — 1 минута.", reply_markup=back_kb())
+        return
+
+    await reset_misclick(state)
+    await finish_one_time_periodic(message, state, n)
+
+
+async def finish_one_time_periodic(message: Message, state: FSMContext, interval: int):
+    await state.update_data(interval_minutes=interval)
+    await push_history(state, OneTimeReminder.periodic_interval.state)
+    await state.set_state(OneTimeReminder.confirm)
+    await render_step(message, state, OneTimeReminder.confirm.state)
+
+
+@dp.message(OneTimeReminder.confirm, F.text == "Сохранить")
+async def one_time_save(message: Message, state: FSMContext):
+    data = await state.get_data()
+    create_reminder_db(
+        user_id=message.from_user.id,
+        title=data["title"],
+        target_date=data["target_date"],
+        exact_end_time=data.get("exact_end_time"),
+        frequency_type="one_time",
+        mode_type=data["mode_type"],
+        times_text=data.get("times_text"),
+        weekdays_text=None,
+        start_time=data.get("start_time"),
+        end_time=data.get("end_time"),
+        interval_minutes=data.get("interval_minutes"),
+        reminder_kind="one_time",
+        remind_date=data["remind_date"],
+    )
+
+    user = get_user(message.from_user.id)
+    await state.clear()
+    await message.answer("Готово. Начинаю заебывать.", reply_markup=main_menu_inline())
+
+    if user and not user.get("notifications_hint_shown"):
+        mark_notifications_hint_shown(message.from_user.id)
+        await message.answer(
+            "Включи уведомления у бота, чтобы я мог нормально заебывать."
+        )
+
+
+@dp.message(OneTimeReminder.confirm, F.text == "Изменить")
+async def one_time_edit_from_confirm(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await push_history(state, OneTimeReminder.confirm.state)
+    await state.set_state(OneTimeReminder.edit_field)
+    await render_step(message, state, OneTimeReminder.edit_field.state)
+
+
+@dp.message(OneTimeReminder.edit_field, F.text == "Повод")
+async def one_time_edit_title(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(_create_edit_mode=True, _create_edit_target="title")
+    await push_history(state, OneTimeReminder.edit_field.state)
+    await state.set_state(OneTimeReminder.title)
+    await message.answer("Введи новый повод.", reply_markup=back_kb())
+
+
+@dp.message(OneTimeReminder.edit_field, F.text == "Дату")
+async def one_time_edit_date(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(_create_edit_mode=True, _create_edit_target="target_date")
+    await push_history(state, OneTimeReminder.edit_field.state)
+    await state.set_state(OneTimeReminder.target_date)
+    await render_step(message, state, OneTimeReminder.target_date.state)
+
+
+@dp.message(OneTimeReminder.edit_field, F.text == "День напоминания")
+async def one_time_edit_remind_date(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(_create_edit_mode=True, _create_edit_target="remind_date")
+    await push_history(state, OneTimeReminder.edit_field.state)
+    await state.set_state(OneTimeReminder.remind_date)
+    await render_step(message, state, OneTimeReminder.remind_date.state)
+
+
+@dp.message(OneTimeReminder.edit_field, F.text == "Точное время конца")
+async def one_time_edit_exact_end(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(_create_edit_mode=True, _create_edit_target="exact_end_time")
+    await push_history(state, OneTimeReminder.edit_field.state)
+    await state.set_state(OneTimeReminder.ask_exact_end)
+    await render_step(message, state, OneTimeReminder.ask_exact_end.state)
+
+
+@dp.message(OneTimeReminder.edit_field, F.text == "Время")
+async def one_time_edit_time(message: Message, state: FSMContext):
+    await reset_misclick(state)
+    await state.update_data(_create_edit_mode=True, _create_edit_target="time")
+    await push_history(state, OneTimeReminder.edit_field.state)
+
+    data = await state.get_data()
+    if data["mode_type"] == "fixed":
+        await state.set_state(OneTimeReminder.fixed_times)
+        await render_step(message, state, OneTimeReminder.fixed_times.state)
+    else:
+        await state.set_state(OneTimeReminder.periodic_range)
+        await render_step(message, state, OneTimeReminder.periodic_range.state)
+
+
+# =========================
 # ПОКАЗАТЬ
 # =========================
 @dp.message(F.text == "Показать заебы")
@@ -1572,7 +2211,7 @@ async def show_reminders(message: Message, state: FSMContext):
 
     reminders = get_user_reminders(message.from_user.id)
     if not reminders:
-        await message.answer("Пока заебывать нечем.", reply_markup=main_menu())
+        await message.answer("Пока заебывать нечем.", reply_markup=main_menu_inline())
         return
 
     kb = ReplyKeyboardMarkup(
@@ -1594,7 +2233,7 @@ async def edit_start(message: Message, state: FSMContext):
     reminders = get_user_reminders(message.from_user.id)
     if not reminders:
         await state.clear()
-        await message.answer("Пока заебывать нечем.", reply_markup=main_menu())
+        await message.answer("Пока заебывать нечем.", reply_markup=main_menu_inline())
         return
 
     await state.clear()
@@ -1620,13 +2259,15 @@ async def edit_pick(message: Message, state: FSMContext):
 
     await reset_misclick(state)
     rem = reminders[idx]
-    weekdays_selected = [int(x) for x in rem["weekdays_text"].split(",")] if rem["weekdays_text"] else []
+    weekdays_selected = [int(x) for x in rem["weekdays_text"].split(",")] if rem.get("weekdays_text") else []
 
     await state.update_data(
         edit_id=rem["id"],
         title=rem["title"],
         target_date=rem["target_date"],
+        remind_date=rem.get("remind_date"),
         exact_end_time=rem.get("exact_end_time"),
+        reminder_kind=rem.get("reminder_kind", "regular"),
         frequency_type=rem["frequency_type"],
         mode_type=rem["mode_type"],
         times_text=rem.get("times_text"),
@@ -1657,6 +2298,22 @@ async def edit_date_ask(message: Message, state: FSMContext):
     await render_step(message, state, EditReminder.target_date.state)
 
 
+@dp.message(EditReminder.field, F.text == "День напоминания")
+async def edit_remind_date_ask(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("reminder_kind") != "one_time":
+        await message.answer(
+            "У этого заеба нет отдельного дня напоминания.",
+            reply_markup=edit_field_kb(data.get("reminder_kind", "regular"), data.get("frequency_type")),
+        )
+        return
+
+    await reset_misclick(state)
+    await push_history(state, EditReminder.field.state)
+    await state.set_state(EditReminder.remind_date)
+    await render_step(message, state, EditReminder.remind_date.state)
+
+
 @dp.message(EditReminder.field, F.text == "Точное время конца")
 async def edit_exact_end_ask(message: Message, state: FSMContext):
     await reset_misclick(state)
@@ -1667,6 +2324,14 @@ async def edit_exact_end_ask(message: Message, state: FSMContext):
 
 @dp.message(EditReminder.field, F.text == "Тип заеба")
 async def edit_type_ask(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("reminder_kind") == "one_time":
+        await message.answer(
+            "У одноразового заеба тип менять не нужно.",
+            reply_markup=edit_field_kb("one_time"),
+        )
+        return
+
     await reset_misclick(state)
     await push_history(state, EditReminder.field.state)
     await state.set_state(EditReminder.frequency)
@@ -1676,8 +2341,18 @@ async def edit_type_ask(message: Message, state: FSMContext):
 @dp.message(EditReminder.field, F.text == "Дни недели")
 async def edit_days_ask(message: Message, state: FSMContext):
     data = await state.get_data()
+    if data.get("reminder_kind") == "one_time":
+        await message.answer(
+            "У одноразового заеба нет дней недели.",
+            reply_markup=edit_field_kb("one_time"),
+        )
+        return
+
     if data["frequency_type"] != "weekdays":
-        await message.answer("У этого заеба нет дней недели.", reply_markup=edit_field_kb(data["frequency_type"]))
+        await message.answer(
+            "У этого заеба нет дней недели.",
+            reply_markup=edit_field_kb("regular", data["frequency_type"]),
+        )
         return
 
     await reset_misclick(state)
@@ -1724,15 +2399,54 @@ async def edit_date_set(message: Message, state: FSMContext):
 
     d = parse_date_ddmmyy(message.text or "")
     if not d:
-        await message.answer("Хуйня. Напиши нормально.\n\nФормат: 020726\nЭто значит: 02.07.2026", reply_markup=back_kb())
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 020726\nЭто значит: 02.07.2026",
+            reply_markup=back_kb(),
+        )
         return
     if d < user_now.date():
         await message.answer("Дурак совсем? Это ведь прошлое.", reply_markup=back_kb())
         return
 
+    data = await state.get_data()
+    if data.get("reminder_kind") == "one_time" and data.get("remind_date"):
+        remind_d = date.fromisoformat(data["remind_date"])
+        if remind_d > d:
+            await message.answer("Хуйня. Конечная дата не может быть раньше дня напоминания.", reply_markup=back_kb())
+            return
+
     await reset_misclick(state)
     await state.update_data(target_date=d.isoformat())
     await push_history(state, EditReminder.target_date.state)
+    await state.set_state(EditReminder.confirm)
+    await render_step(message, state, EditReminder.confirm.state)
+
+
+@dp.message(EditReminder.remind_date)
+async def edit_remind_date_set(message: Message, state: FSMContext):
+    user = get_user(message.from_user.id)
+    user_now = get_user_now(user["timezone"])
+
+    d = parse_date_ddmmyy(message.text or "")
+    if not d:
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 020726\nЭто значит: 02.07.2026",
+            reply_markup=back_kb(),
+        )
+        return
+    if d < user_now.date():
+        await message.answer("Дурак совсем? Это ведь прошлое.", reply_markup=back_kb())
+        return
+
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["target_date"])
+    if d > target_date:
+        await message.answer("Хуйня. День напоминания не может быть позже конечной даты.", reply_markup=back_kb())
+        return
+
+    await reset_misclick(state)
+    await state.update_data(remind_date=d.isoformat())
+    await push_history(state, EditReminder.remind_date.state)
     await state.set_state(EditReminder.confirm)
     await render_step(message, state, EditReminder.confirm.state)
 
@@ -1758,7 +2472,10 @@ async def edit_exact_end_no(message: Message, state: FSMContext):
 async def edit_exact_end_time(message: Message, state: FSMContext):
     parsed = parse_hhmm(message.text or "")
     if not parsed:
-        await message.answer("Хуйня. Напиши нормально.\n\nПиши так: 1400\nЭто значит: 14:00", reply_markup=back_kb())
+        await message.answer(
+            "Хуйня. Напиши нормально.\n\nПиши в таком формате: 1400\nЭто значит: 14:00",
+            reply_markup=back_kb(),
+        )
         return
 
     await reset_misclick(state)
@@ -1838,7 +2555,7 @@ async def edit_fixed_times(message: Message, state: FSMContext):
     if not times:
         await message.answer(
             "Хуйня. Напиши нормально.\n\n"
-            "Пиши так: 1400\n"
+            "Пиши в таком формате: 1400\n"
             "Если нужно несколько — так: 1400 1600 2130\n\n"
             "Это значит: 14:00 16:00 21:30",
             reply_markup=back_kb(),
@@ -1863,7 +2580,7 @@ async def edit_periodic_range(message: Message, state: FSMContext):
     if not result:
         await message.answer(
             "Хуйня. Напиши нормально.\n\n"
-            "Формат: 2300 2400\n"
+            "Пиши в таком формате: 2300 2400\n"
             "Это значит: с 23:00 до 24:00",
             reply_markup=back_kb(),
         )
@@ -1936,7 +2653,9 @@ async def edit_save(message: Message, state: FSMContext):
     payload = {
         "title": data["title"],
         "target_date": data["target_date"],
+        "remind_date": data.get("remind_date"),
         "exact_end_time": data.get("exact_end_time"),
+        "reminder_kind": data.get("reminder_kind", "regular"),
         "frequency_type": data["frequency_type"],
         "mode_type": data["mode_type"],
         "times_text": data.get("times_text"),
@@ -1947,7 +2666,7 @@ async def edit_save(message: Message, state: FSMContext):
     }
     update_reminder_db(data["edit_id"], message.from_user.id, payload)
     await state.clear()
-    await message.answer("Готово. Начинаю заебывать.", reply_markup=main_menu())
+    await message.answer("Готово. Начинаю заебывать.", reply_markup=main_menu_inline())
 
 
 @dp.message(EditReminder.confirm, F.text == "Изменить")
@@ -1966,7 +2685,7 @@ async def delete_start(message: Message, state: FSMContext):
     reminders = get_user_reminders(message.from_user.id)
     if not reminders:
         await state.clear()
-        await message.answer("Пока заебывать нечем.", reply_markup=main_menu())
+        await message.answer("Пока заебывать нечем.", reply_markup=main_menu_inline())
         return
 
     await state.clear()
@@ -2013,13 +2732,13 @@ async def delete_yes(message: Message, state: FSMContext):
     if data.get("delete_all"):
         delete_all_reminders_db(message.from_user.id)
         await state.clear()
-        await message.answer("Удалил всё. Больше не буду заебывать.", reply_markup=main_menu())
+        await message.answer("Удалил всё. Больше не буду заебывать.", reply_markup=main_menu_inline())
         return
 
     rem = data["delete_reminder"]
     delete_reminder_db(rem["id"], message.from_user.id)
     await state.clear()
-    await message.answer("Удалил. Больше не буду заебывать.", reply_markup=main_menu())
+    await message.answer("Удалил. Больше не буду заебывать.", reply_markup=main_menu_inline())
 
 
 # =========================
@@ -2027,9 +2746,9 @@ async def delete_yes(message: Message, state: FSMContext):
 # =========================
 @dp.message(F.text == "Меню")
 async def menu_text(message: Message, state: FSMContext):
-    await state.clear()
     await clear_weekdays_picker(state, message.chat.id)
-    await message.answer("Главное меню.", reply_markup=main_menu())
+    await state.clear()
+    await send_main_menu(message)
 
 
 @dp.message(CreateReminder.ask_exact_end)
@@ -2038,23 +2757,43 @@ async def menu_text(message: Message, state: FSMContext):
 @dp.message(CreateReminder.periodic_interval)
 @dp.message(CreateReminder.confirm)
 @dp.message(CreateReminder.edit_field)
+
+@dp.message(OneTimeReminder.ask_exact_end)
+@dp.message(OneTimeReminder.mode)
+@dp.message(OneTimeReminder.periodic_interval)
+@dp.message(OneTimeReminder.confirm)
+@dp.message(OneTimeReminder.edit_field)
+
 @dp.message(EditReminder.field)
 @dp.message(EditReminder.ask_exact_end)
 @dp.message(EditReminder.frequency)
 @dp.message(EditReminder.mode)
 @dp.message(EditReminder.periodic_interval)
 @dp.message(EditReminder.confirm)
+
 @dp.message(DeleteReminder.confirm)
 @dp.message(CountrySetup.choose)
 async def buttons_only_states(message: Message, state: FSMContext):
     current = await state.get_state()
     key = current or "common"
-    await misclick_reply(message, state, key)
+
+    reply_markup = None
+    if current == CountrySetup.choose.state:
+        reply_markup = country_inline()
+
+    await misclick_reply(message, state, key, reply_markup=reply_markup)
 
 
 @dp.message()
 async def fallback(message: Message, state: FSMContext):
-    await misclick_reply(message, state, "fallback", main_menu())
+    current = await state.get_state()
+    if current:
+        await misclick_reply(message, state, "fallback")
+    else:
+        await message.answer(
+            "чел, используй кнопки пожалуйста, Денис очень старался делая их.",
+            reply_markup=main_menu_inline(),
+        )
 
 
 # =========================
@@ -2079,7 +2818,7 @@ async def reminder_loop():
                 user_now = get_user_now(timezone_name)
                 finish_dt = reminder_finish_dt(rem, timezone_name)
 
-                if user_now > finish_dt:
+                if user_now >= finish_dt:
                     deactivate_reminder(rem["id"])
                     continue
 
@@ -2088,13 +2827,28 @@ async def reminder_loop():
                 current_text = f"{user_now.hour:02d}:{user_now.minute:02d}"
                 weekday = user_now.weekday()
 
-                if rem["frequency_type"] == "daily":
+                if rem.get("reminder_kind") == "one_time":
+                    remind_day = rem.get("remind_date")
+                    if remind_day == user_now.date().isoformat():
+                        if rem["mode_type"] == "fixed":
+                            times = rem["times_text"].split(",") if rem.get("times_text") else []
+                            if current_text in times:
+                                need_send = True
+                        elif rem["mode_type"] == "periodic":
+                            if rem.get("start_time") and rem.get("end_time") and rem.get("interval_minutes"):
+                                start_minutes = parse_minutes_hhmm(rem["start_time"])
+                                end_minutes = parse_minutes_hhmm(rem["end_time"])
+                                if start_minutes <= current_hhmm < end_minutes:
+                                    if (current_hhmm - start_minutes) % int(rem["interval_minutes"]) == 0:
+                                        need_send = True
+
+                elif rem["frequency_type"] == "daily":
                     if rem["mode_type"] == "fixed":
-                        times = rem["times_text"].split(",") if rem["times_text"] else []
+                        times = rem["times_text"].split(",") if rem.get("times_text") else []
                         if current_text in times:
                             need_send = True
                     elif rem["mode_type"] == "periodic":
-                        if rem["start_time"] and rem["end_time"] and rem["interval_minutes"]:
+                        if rem.get("start_time") and rem.get("end_time") and rem.get("interval_minutes"):
                             start_minutes = parse_minutes_hhmm(rem["start_time"])
                             end_minutes = parse_minutes_hhmm(rem["end_time"])
                             if start_minutes <= current_hhmm < end_minutes:
@@ -2102,14 +2856,14 @@ async def reminder_loop():
                                     need_send = True
 
                 elif rem["frequency_type"] == "weekdays":
-                    days = [int(x) for x in rem["weekdays_text"].split(",")] if rem["weekdays_text"] else []
+                    days = [int(x) for x in rem["weekdays_text"].split(",")] if rem.get("weekdays_text") else []
                     if weekday in days:
                         if rem["mode_type"] == "fixed":
-                            times = rem["times_text"].split(",") if rem["times_text"] else []
+                            times = rem["times_text"].split(",") if rem.get("times_text") else []
                             if current_text in times:
                                 need_send = True
                         elif rem["mode_type"] == "periodic":
-                            if rem["start_time"] and rem["end_time"] and rem["interval_minutes"]:
+                            if rem.get("start_time") and rem.get("end_time") and rem.get("interval_minutes"):
                                 start_minutes = parse_minutes_hhmm(rem["start_time"])
                                 end_minutes = parse_minutes_hhmm(rem["end_time"])
                                 if start_minutes <= current_hhmm < end_minutes:
@@ -2120,16 +2874,15 @@ async def reminder_loop():
                     continue
 
                 sent_key = f'{user_now.strftime("%Y-%m-%d %H:%M")}::{rem["id"]}'
-                if was_sent(rem["id"], sent_key):
+                if not try_mark_sent(rem["id"], sent_key):
                     continue
 
                 try:
                     await bot.send_message(
                         rem["user_id"],
                         reminder_text(rem, timezone_name),
-                        reply_markup=main_menu(),
+                        reply_markup=main_menu_inline(),
                     )
-                    mark_sent(rem["id"], sent_key)
                 except Exception as send_error:
                     print("send reminder error:", send_error)
 
