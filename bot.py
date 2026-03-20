@@ -20,7 +20,8 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "8710757819:AAFra83pBHkxPT9m6BYJRY9kEh8Akry39gI"
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_NAME = os.getenv("DB_NAME", "bot.db")
 
 MAX_REMINDERS = 10
@@ -95,8 +96,8 @@ def init_db():
     """)
 
     cur.execute("PRAGMA table_info(users)")
-    cols = [row[1] for row in cur.fetchall()]
-    if "notification_hint_sent" not in cols:
+    user_cols = [row[1] for row in cur.fetchall()]
+    if "notification_hint_sent" not in user_cols:
         cur.execute("ALTER TABLE users ADD COLUMN notification_hint_sent INTEGER NOT NULL DEFAULT 0")
 
     conn.commit()
@@ -173,8 +174,17 @@ def create_reminder_db(
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     """, (
-        user_id, title, target_date, exact_end_time, frequency_type, mode_type,
-        times_text, weekdays_text, start_time, end_time, interval_minutes
+        user_id,
+        title,
+        target_date,
+        exact_end_time,
+        frequency_type,
+        mode_type,
+        times_text,
+        weekdays_text,
+        start_time,
+        end_time,
+        interval_minutes,
     ))
     conn.commit()
     conn.close()
@@ -640,6 +650,14 @@ def main_menu():
     return builder.as_markup()
 
 
+def country_inline_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="Чехия", callback_data="country:set:cz"))
+    builder.row(InlineKeyboardButton(text="Украина", callback_data="country:set:ua"))
+    builder.row(InlineKeyboardButton(text="Другая", callback_data="country:set:other"))
+    return builder.as_markup()
+
+
 def show_list_kb():
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="Изменить заеб", callback_data="menu:edit"))
@@ -717,17 +735,6 @@ def periodic_interval_kb():
             [KeyboardButton(text="Каждые 60 минут")],
             [KeyboardButton(text="Свой интервал")],
             [KeyboardButton(text="Назад")],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def country_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Чехия")],
-            [KeyboardButton(text="Украина")],
-            [KeyboardButton(text="Другая")],
         ],
         resize_keyboard=True,
     )
@@ -819,8 +826,9 @@ async def render_country_step(message: Message):
     await message.answer(
         "Где ты живешь.\n\n"
         "Это нужно для определения твоего часового пояса.",
-        reply_markup=country_kb(),
+        reply_markup=ReplyKeyboardRemove(),
     )
+    await message.answer("Выбери страну:", reply_markup=country_inline_kb())
 
 
 async def render_weekdays_step(message: Message, state: FSMContext):
@@ -1032,6 +1040,9 @@ async def render_step(message: Message, state: FSMContext, state_name: str):
 # =========================
 # БОТ
 # =========================
+if not BOT_TOKEN:
+    raise ValueError("Не найден BOT_TOKEN")
+
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -1117,7 +1128,7 @@ async def delete_start_common(message: Message, state: FSMContext):
 
 
 # =========================
-# INLINE МЕНЮ
+# ГЛАВНОЕ МЕНЮ
 # =========================
 @dp.callback_query(F.data == "menu:main")
 async def menu_main_callback(callback: CallbackQuery, state: FSMContext):
@@ -1183,29 +1194,36 @@ async def start_cmd(message: Message, state: FSMContext):
     await open_main_menu_message(message)
 
 
-@dp.message(CountrySetup.choose, F.text == "Чехия")
-async def country_czech(message: Message, state: FSMContext):
-    set_user_country_timezone(message.from_user.id, "Чехия", "Europe/Prague")
+@dp.callback_query(F.data == "country:set:cz")
+async def country_set_cz(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    set_user_country_timezone(callback.from_user.id, "Чехия", "Europe/Prague")
     await state.clear()
-    await open_main_menu_message(message, "Красава. Страну сохранил.")
+    await open_main_menu_message(callback.message, "Красава. Страну сохранил.")
 
 
-@dp.message(CountrySetup.choose, F.text == "Украина")
-async def country_ukraine(message: Message, state: FSMContext):
-    set_user_country_timezone(message.from_user.id, "Украина", "Europe/Kyiv")
+@dp.callback_query(F.data == "country:set:ua")
+async def country_set_ua(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    set_user_country_timezone(callback.from_user.id, "Украина", "Europe/Kyiv")
     await state.clear()
-    await open_main_menu_message(message, "Красава. Страну сохранил.")
+    await open_main_menu_message(callback.message, "Красава. Страну сохранил.")
 
 
-@dp.message(CountrySetup.choose, F.text == "Другая")
-async def country_other(message: Message, state: FSMContext):
+@dp.callback_query(F.data == "country:set:other")
+async def country_set_other(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await reset_misclick(state)
-    await push_history(state, CountrySetup.choose.state)
     await state.set_state(CountrySetup.manual)
-    await message.answer(
+    await callback.message.answer(
         "Напиши страну.\n\nСейчас тут работает только Россия.",
         reply_markup=back_kb(),
     )
+
+
+@dp.message(CountrySetup.choose)
+async def country_choose_text_block(message: Message, state: FSMContext):
+    await message.answer("Чел, используй кнопки пожалуйста.")
 
 
 @dp.message(CountrySetup.manual)
@@ -2153,7 +2171,6 @@ async def delete_yes(message: Message, state: FSMContext):
 @dp.message(EditReminder.periodic_interval)
 @dp.message(EditReminder.confirm)
 @dp.message(DeleteReminder.confirm)
-@dp.message(CountrySetup.choose)
 async def buttons_only_states(message: Message, state: FSMContext):
     await message.answer("Чел, используй кнопки пожалуйста.")
 
@@ -2273,9 +2290,6 @@ async def reminder_loop():
 # ЗАПУСК
 # =========================
 async def main():
-    if not BOT_TOKEN or BOT_TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
-        raise ValueError("Вставь BOT_TOKEN в код")
-
     init_db()
     asyncio.create_task(reminder_loop())
     await dp.start_polling(bot)
