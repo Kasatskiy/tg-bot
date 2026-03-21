@@ -10,7 +10,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    ReplyKeyboardRemove,
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -932,7 +931,7 @@ async def clear_weekdays_picker(state: FSMContext, chat_id: int):
 
 
 async def send_main_menu(message: Message):
-    await message.answer(reply_markup=ReplyKeyboardRemove())
+    await message.answer("ㅤ", reply_markup=ReplyKeyboardRemove())
     await message.answer("ㅤ", reply_markup=main_menu_inline())
 
 
