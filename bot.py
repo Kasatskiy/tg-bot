@@ -10,8 +10,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    ReplyKeyboardRemove,
     Message,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -494,10 +496,6 @@ def format_duration_parts(total_seconds: int):
     return int(days), int(hours), int(minutes)
 
 
-def pretty_divider():
-    return "✦────────────✦"
-
-
 def plural_days_ru(n: int) -> str:
     n = abs(n) % 100
     if 11 <= n <= 19:
@@ -934,12 +932,12 @@ async def clear_weekdays_picker(state: FSMContext, chat_id: int):
 
 
 async def send_main_menu(message: Message):
+    await message.answer(reply_markup=ReplyKeyboardRemove())
     await message.answer("ㅤ", reply_markup=main_menu_inline())
 
 
 async def send_status_then_menu(message: Message, text: str):
     await message.answer(text)
-    await message.answer(pretty_divider())
     await send_main_menu(message)
 
 
@@ -1281,7 +1279,6 @@ async def start_cmd(message: Message, state: FSMContext):
         return
 
     await message.answer("Привет.\nЯ буду заебывать тебя до нужной даты.")
-    await message.answer(pretty_divider())
     await send_main_menu(message)
 
 
@@ -1292,7 +1289,6 @@ async def country_ukraine(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
     await callback.message.answer("красавчик хорошая страна.\nТеперь выбирай, что делать.")
-    await callback.message.answer(pretty_divider())
     await send_main_menu(callback.message)
 
 
@@ -1303,7 +1299,6 @@ async def country_czech(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
     await callback.message.answer("красавчик хорошая страна.\nТеперь выбирай, что делать.")
-    await callback.message.answer(pretty_divider())
     await send_main_menu(callback.message)
 
 
@@ -1466,7 +1461,6 @@ async def back_handler(message: Message, state: FSMContext):
         await clear_weekdays_picker(state, message.chat.id)
         await state.clear()
         await message.answer("Окей, возвращаю в меню.")
-        await message.answer(pretty_divider())
         await send_main_menu(message)
         return
 
