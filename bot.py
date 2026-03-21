@@ -753,6 +753,12 @@ async def misclick_reply(message: Message, state: FSMContext, key: str, reply_ma
 # =========================
 # КНОПКИ
 # =========================
+def menu_only_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_MENU)]],
+        resize_keyboard=True,
+    )
+
 def main_menu_inline():
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text=BTN_MAIN_CREATE_REGULAR, callback_data="menu:create_regular"))
@@ -2983,9 +2989,10 @@ async def reminder_loop():
                     await bot.send_message(
                         rem["user_id"],
                         reminder_text(rem, timezone_name),
+                        reply_markup=menu_only_kb(),
                     )
                 except Exception as send_error:
-                    print("send reminder error:", send_error)
+                  print("send reminder error:", send_error)
 
             await asyncio.sleep(20)
         except Exception as e:
