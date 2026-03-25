@@ -3012,7 +3012,43 @@ async def send_to_owner(rem: dict):
         except Exception as e:
             print("reminder_loop error:", e)
             await asyncio.sleep(10)
+# =========================
+# ЦИКЛ НАПОМИНАНИЙ (МИНИМАЛЬНЫЙ ЧТОБ РАБОТАЛО)
+# =========================
+async def reminder_loop():
+    while True:
+        try:
+            conn = db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT r.*, u.timezone
+                FROM reminders r
+                JOIN users u ON u.user_id = r.user_id
+                WHERE r.active = 1 AND u.timezone IS NOT NULL
+            """)
+            reminders = [dict(x) for x in cur.fetchall()]
+            conn.close()
 
+            for rem in reminders:
+                timezone_name = rem["timezone"]
+                now = get_user_now(timezone_name)
+
+                text = f"🔔 {rem['title']}"
+
+                try:
+                    await bot.send_message(
+                        rem["user_id"],
+                        text,
+                        reply_markup=menu_only_kb()
+                    )
+                except Exception as e:
+                    print("send error:", e)
+
+            await asyncio.sleep(60)
+
+        except Exception as e:
+            print("loop error:", e)
+            await asyncio.sleep(10)
 
 # =========================
 # ЗАПУСК
