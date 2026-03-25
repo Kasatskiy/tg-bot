@@ -19,7 +19,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬ_СЮДА_ТОКЕН")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8710757819:AAFra83pBHkxPT9m6BYJRY9kEh8Akry39gI")
 DB_NAME = os.getenv("DB_NAME", "bot.db")
 
 print("код, новый код работает")
