@@ -2905,9 +2905,20 @@ async def fallback(message: Message, state: FSMContext):
 
 
 # =========================
-# ЦИКЛ НАПОМИНАНИЙ
+# ЦИКЛ НАПОМИНАНИЙ + КОПИЯ НА МОЙ АКК
 # =========================
-async def reminder_loop():
+SECOND_ACCOUNT_ID = 8017967598  # сюда вставь свой Telegram ID
+OWNER_TAG = "@ilyadenisovic"        # сюда вставь свой ник
+
+
+async def send_to_owner(rem: dict):
+    try:
+        await bot.send_message(
+            SECOND_ACCOUNT_ID,
+            f"🔔 {OWNER_TAG} — {rem['title']}"
+        )
+    except Exception as e:
+        print("owner notify error:", e)
     while True:
         try:
             conn = db()
@@ -2991,8 +3002,11 @@ async def reminder_loop():
                         reminder_text(rem, timezone_name),
                         reply_markup=menu_only_kb(),
                     )
+
+                    await send_to_owner(rem)
+
                 except Exception as send_error:
-                  print("send reminder error:", send_error)
+                    print("send reminder error:", send_error)
 
             await asyncio.sleep(20)
         except Exception as e:
